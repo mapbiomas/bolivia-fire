@@ -1,0 +1,247 @@
+/***************************************************************
+ MAPBIOMAS FUEGO - SUBPRODUCTOS DERIVADOS DE COBERTURA QUEIMADA
+
+ 📅 FECHA:  Abril 2026
+
+ EQUIPO:
+ Red de mapeo de cicatrices de fuego - MapBiomas Fuego
+ - Instituto de Pesquisa Ambiental da Amazônia (IPAM)
+ - Wallace Silva e Vera Arruda; wallace.silva@ipam.org.br, vera.arruda@ipam.org.br
+ -------------------------------------------------------------
+ 📌 ¿QUÉ HACE ESTE SCRIPT?
+ Genera y exporta 4 productos a partir de cicatrices de fuego:
+
+ 🟠 `monthlyBurnedCoverage`: codificación mes + clase LULC.
+ 🔵 `annualBurnedCoverage`: codificación binaria anual + clase LULC.
+ 🟡 `monthlyBurnedArea`: mes de ocurrencia (1 a 12), sin LULC.
+ 🟢 `annualBurnedArea`: fuego anual (0/1), sin LULC.
+
+ -------------------------------------------------------------
+ 🔧 ¿QUÉ DEBO MODIFICAR PARA USAR ESTE SCRIPT?
+ ✅ Seleccionar el país deseado (bloque de selección).
+ ✅ Verificar `assetOutput`, `bounds`, nombres de salida.
+
+***************************************************************/
+
+// 🔧 Selección del país a trabajar (
+// 🌍 País en análisis
+var country = 'bolivia'; // 'bolivia', 'chile', 'colombia', 'ecuador',  'guyana', 'paraguay', 'peru' , 'venezuela'
+var coll_n = '1';
+// 🧾 Nombres de archivos de salida
+var outFileNameMontlhyCoverage = 'mapbiomas_' + country + '_fire_collection'+coll_n+'_monthly_burned_coverage_v1'; 
+var outFileNameBurnedCoverage = 'mapbiomas_' + country + '_fire_collection'+coll_n+'_annual_burned_coverage_v1'; 
+var outFileNameMontlhy = 'mapbiomas_' + country + '_fire_collection'+coll_n+'_monthly_burned_v1'; 
+var outFileNameAnual = 'mapbiomas_' + country + '_fire_collection'+coll_n+'_annual_burned_v1'; 
+
+var assetOutput = 'projects/mapbiomas-' + country + '/assets/FIRE/COLLECTION'+coll_n+'/FINAL_PRODUCTS/';
+//var assetOutput = 'projects/mapbiomas-public/assets/' + country + '/fire/collection1/';
+
+// 🧾 Nombres de archivos de entrada
+var assetInput = 'projects/mapbiomas-' + country + '/assets/FIRE/COLLECTION'+coll_n+'/CLASSIFICATION_COLLECTIONS/collection'+coll_n+'_fire_mask_v1';
+var scale = 30;
+
+// 🌱 Colecciones de LULC por país
+var landcoverDict  = {
+  bolivia: ee.Image('projects/mapbiomas-public/assets/bolivia/lulc/collection3/mapbiomas_bolivia_collection3_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/bolivia/lulc/collection3/mapbiomas_bolivia_collection3_integration_v1').slice(-1).rename(['classification_2025'])),
+  chile: ee.Image('projects/mapbiomas-public/assets/chile/collection1/mapbiomas_chile_collection1_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/chile/collection1/mapbiomas_chile_collection1_integration_v1').slice(-1).rename(['classification_2023']))
+            .addBands(ee.Image('projects/mapbiomas-public/assets/chile/collection1/mapbiomas_chile_collection1_integration_v1').slice(-1).rename(['classification_2024'])),
+  colombia: ee.Image('projects/mapbiomas-public/assets/colombia/collection2/mapbiomas_colombia_collection2_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/colombia/collection2/mapbiomas_colombia_collection2_integration_v1').slice(-1).rename(['classification_2024'])),
+  paraguay: ee.Image('projects/mapbiomas-public/assets/paraguay/collection2/mapbiomas_paraguay_collection2_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/paraguay/collection2/mapbiomas_paraguay_collection2_integration_v1').slice(-1).rename(['classification_2024'])),
+  peru: ee.Image('projects/mapbiomas-public/assets/peru/collection3/mapbiomas_peru_collection3_integration_v1')
+};
+
+// 🧭 Regiones por país
+var regionsDict = {
+  bolivia: ee.FeatureCollection('projects/mapbiomas-bolivia/assets/FIRE/AUXILIARY_DATA/regiones_fuego_bolivia_v1'),
+  chile: ee.FeatureCollection('projects/mapbiomas-chile/assets/FIRE/AUXILIARY_DATA/regiones_fuego_chile_v1'),
+  colombia: ee.FeatureCollection('projects/mapbiomas-colombia/assets/FIRE/AUXILIARY_DATA/regiones_fuego_colombia_v1'),
+  paraguay: ee.FeatureCollection('projects/mapbiomas-paraguay/assets/FIRE/AUXILIARY_DATA/regiones_fuego_paraguay_v1'),
+  peru: ee.FeatureCollection('projects/mapbiomas-peru/assets/FIRE/AUXILIARY_DATA/regiones_fuego_peru_v1')
+};
+
+// Selección activa:
+var landcover = landcoverDict[country];                 // Image
+var regions  = regionsDict[country];                    // FeatureCollection
+var geometry = regions.union().geometry();              // Geometry do país (regiones)
+
+
+// Años de trabajo
+var startYear = 1995;
+var endYear = 2025;
+var years = ee.List.sequence(startYear, endYear);
+
+// Selección activa
+var landcover = landcoverDict[country];
+var regions = regionsDict[country];
+var geometry = regions.union().geometry();
+
+// Ajusta bandas LULC al rango y duplica 2024→2025 si falta
+var lc = ee.ImageCollection.fromImages(
+  years.map(function(y) {
+    y = ee.Number(y).int();
+    var band = ee.String('classification_').cat(y.format('%d'));
+    var hasBand = landcover.bandNames().contains(band);
+
+    return ee.Image(ee.Algorithms.If(
+      hasBand,
+      landcover.select([band]),
+      landcover.select('classification_2024').rename(band)
+    ));
+  })
+).toBands();
+
+var lcNames = years.map(function(y) {
+  y = ee.Number(y).int();
+  return ee.String('classification_').cat(y.format('%d'));
+});
+
+landcover = lc.rename(lcNames);
+
+// 📅 Cargar colección de cicatrices de fuego
+var fireCollection = ee.ImageCollection(assetInput);
+
+var monthlyBurnedArea = ee.Image(
+  years.iterate(function(year, prev) {
+    year = ee.Number(year).int();
+    var image = fireCollection
+      .filter(ee.Filter.eq('year', year))
+      .mosaic()
+      .rename(ee.String('burned_coverage_').cat(year.format('%d')));
+    return ee.Image(prev).addBands(image);
+  }, ee.Image().select())
+);
+
+// 🟠 Producto: Cobertura queimada mensual (mes + clase)
+var monthlyBurnedCoverage = monthlyBurnedArea
+  .multiply(100)
+  .add(landcover)
+  .uint16();
+
+// 🔵 Producto: Cobertura queimada anual binaria (0/1 + clase)
+var annualBurnedCoverage = monthlyBurnedArea
+  .gte(1)
+  .multiply(landcover)
+  .uint8();
+
+// 🟡 Producto: Área queimada mensual (solo mes 1–12)
+var monthlyBandNames = monthlyBurnedArea.bandNames().map(function(bn) {
+  return ee.String(bn).replace('burned_coverage_', 'burned_monthly_');
+});
+var monthlyBurnedAreaClean = monthlyBurnedArea
+  .rename(monthlyBandNames)
+  .uint8();
+
+// 🟢 Producto: Área queimada anual binaria (0 o 1)
+var annualBandNames = monthlyBandNames.map(function(bn) {
+  return ee.String(bn).replace('burned_monthly_', 'burned_area_');
+});
+var annualBurnedArea = monthlyBurnedArea
+  .gt(0)
+  .rename(annualBandNames)
+  .uint8();
+
+// 📤 Exportación de resultados
+
+print('🟠 monthlyBurnedCoverage',monthlyBurnedCoverage);
+
+Export.image.toAsset({
+  image: monthlyBurnedCoverage,
+  description: outFileNameMontlhyCoverage,
+  assetId: assetOutput + outFileNameMontlhyCoverage,
+  pyramidingPolicy: { '.default': 'mode' },
+  region: geometry,
+  scale: scale,
+  maxPixels: 1e13,
+  overwrite: true
+});
+
+print('🔵 annualBurnedCoverage',annualBurnedCoverage);
+
+Export.image.toAsset({
+  image: annualBurnedCoverage,
+  description: outFileNameBurnedCoverage,
+  assetId: assetOutput + outFileNameBurnedCoverage,
+  pyramidingPolicy: { '.default': 'mode' },
+  region: geometry,
+  scale: scale,
+  maxPixels: 1e13,
+  overwrite: true
+});
+
+print('🟡 monthlyBurnedArea',monthlyBurnedAreaClean);
+
+Export.image.toAsset({
+  image: monthlyBurnedAreaClean,
+  description: outFileNameMontlhy,
+  assetId: assetOutput + outFileNameMontlhy,
+  pyramidingPolicy: { '.default': 'mode' },
+  region: geometry,
+  scale: scale,
+  maxPixels: 1e13,
+  overwrite: true
+});
+
+print('🟢 annualBurnedArea',annualBurnedArea);
+
+Export.image.toAsset({
+  image: annualBurnedArea,
+  description: outFileNameAnual,
+  assetId: assetOutput + outFileNameAnual,
+  pyramidingPolicy: { '.default': 'mode' },
+  region: geometry,
+  scale: scale,
+  maxPixels: 1e13,
+  overwrite: true
+});
+
+// 🧪 Visualización (opcional)
+var year = 2019;
+var fire_palettes = require('users/geomapeamentoipam/MapBiomas__Fogo:00_Tools/Palettes.js');
+var lulc_palettes = require('users/mapbiomas/modules:Palettes.js');
+
+Map.addLayer(
+  monthlyBurnedCoverage.mod(100).byte(),
+  {
+    min: 0,
+    max: 69,
+    bands: 'burned_coverage_' + year,
+    palette: lulc_palettes.get('classification9')
+  },
+  '🟠 Cobertura quemada mensual- uso del suelo ' + year
+);
+
+
+Map.addLayer(
+  annualBurnedCoverage,
+  {
+    min: 0,
+    max: 69,
+    bands: 'burned_coverage_' + year,
+    palette: lulc_palettes.get('classification9')
+  },
+  '🔵 Cobertura quemada anual - uso del suelo ' + year
+);
+
+Map.addLayer(
+  monthlyBurnedAreaClean,
+  {
+    min: 1,
+    max: 12,
+    bands: 'burned_monthly_' + year,
+    palette: fire_palettes.get('mensual')
+  },
+  '🟡 Área quemada mensual - mes de ocurrencia ' + year
+);
+
+Map.addLayer(
+  annualBurnedArea,
+  {
+    bands: 'burned_area_' + year,
+    palette: '800000'
+  },
+  '🟢 Área quemada anual - presencia binaria ' + year
+);
