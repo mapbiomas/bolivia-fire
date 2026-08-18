@@ -1,0 +1,83 @@
+/***************************************************************
+ MAPBIOMAS FUEGO – SUBPRODUCTO: ÁREA QUEMADA ANUAL (BINARIO)
+
+ 📅 FECHA: 21 de abril de 2026
+
+ EQUIPO:
+ Red de mapeo de cicatrices de fuego - MapBiomas Fuego
+ - Instituto de Pesquisa Ambiental da Amazônia (IPAM)
+
+ -------------------------------------------------------------
+ 📌 ¿QUÉ HACE ESTE SCRIPT?
+ Genera imágenes binarias anuales (1 = fuego, 0 = no fuego)
+ a partir de la colección anual de área quemada.
+
+ -------------------------------------------------------------
+ 🔧 CONFIGURACIÓN NECESARIA:
+ ✅ Definir `country`
+ ✅ Verificar rutas automáticas (assetInput / regiones)
+ ✅ Ajustar carpeta de exportación (Drive)
+
+***************************************************************/
+
+print(
+  ui.Label('Después de exportar los rásters anuales binarios, utilice el notebook de Colab para vectorizar.'),
+  ui.Label('Google Colab', {}, 'https://colab.research.google.com/drive/17IGlEKKtAC8mD_3iGiWTAHjc7_IUigAz?usp=sharing')
+);
+
+ 
+// 🔧 BLOQUE DE CONFIGURACIÓN
+
+var country = 'bolivia'; // 'bolivia', 'chile', 'colombia', 'ecuador', 'guyana', 'paraguay', 'peru', 'venezuela'
+var coll_n = '1';
+
+// 🔥 Asset de área quemada anual
+var assetInput = 'projects/mapbiomas-' + country +  '/assets/FIRE/COLLECTION' + coll_n +
+  '/FINAL_PRODUCTS/mapbiomas_' + country +  '_fire_collection' + coll_n + '_annual_burned_v1';
+
+// 📍 Regiones auxiliares (para recorte)
+var regions = ee.FeatureCollection('projects/mapbiomas-' + country +  '/assets/FIRE/AUXILIARY_DATA/regiones_fuego_' + country + '_v1');
+
+// 📤 Configuración de exportación
+var folder = 'mapbiomas_fire_collection' + coll_n + '_' + country;
+var scale = 30;
+
+//📥 CARGA Y PREPARACIÓN DE INSUMOS
+var fire = ee.Image(assetInput);
+var geometry = regions.geometry().convexHull(1000);
+print('🔥 Colección anual:', fire);
+Map.centerObject(geometry, 5);
+
+//🔁 EXPORTACIÓN AUTOMÁTICA POR AÑO
+
+fire.bandNames().evaluate(function(bandNames){
+  bandNames.forEach(function(bandName){
+    // Convertir a binario (>=1 → 1)
+    var fire_year = fire.select(bandName).gte(1).rename(bandName).uint8();
+    var description = 'mapbiomas_' + country + '_fire_collection' + coll_n + '_' + bandName;
+
+    Export.image.toDrive({
+      image: fire_year,
+      description: 'GT_Fuego-' + description,
+      folder: folder,
+      fileNamePrefix: description,
+      region: geometry,
+      scale: scale,
+      maxPixels: 1e13
+    });
+
+  });
+
+});
+
+// VISUALIZACIÓN (OPCIONAL)
+
+// Visualizar um ano específico
+var year_vis = 'burned_area_2025';
+
+Map.addLayer(
+  fire.select(year_vis),
+  {min: 0, max: 1, palette: ['000000', 'FF0000']},
+  '🔥 Fuego ' + year_vis,
+  true
+);
