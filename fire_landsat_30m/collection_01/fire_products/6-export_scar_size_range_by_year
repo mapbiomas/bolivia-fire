@@ -1,0 +1,126 @@
+/***************************************************************
+ MAPBIOMAS FUEGO – SUBPRODUCTO: CLASIFICACIÓN POR TAMAÑO DE CICATRIZ (ÁREA QUEMADA ANUAL)
+
+ 📅 FECHA: sbril de 2025
+
+ EQUIPO:
+ Red de mapeo de cicatrices de fuego - MapBiomas Fuego
+ - Instituto de Pesquisa Ambiental da Amazônia (IPAM)
+ - Wallace Silva e Vera Arruda; wallace.silva@ipam.org.br, vera.arruda@ipam.org.br
+ -------------------------------------------------------------
+ 📌 ¿QUÉ HACE ESTE SCRIPT?
+ A partir del producto de área quemada anual (ha), clasifica los píxeles
+ en rangos de tamaño de cicatriz y exporta el resultado como ráster
+ categórico a los Assets. También muestra una visualización y una leyenda. 
+
+ 🔴 Productos generados:
+ - `scar_size_ranges` (8 clases): rangos de tamaño de cicatriz anual (en hectáreas). 
+
+ 🧠 Lógica (resumen):
+ 1) Cargar la imagen multibanda de área quemada anual (ha). 
+ 2) Asignar clases (1 a 8) según umbrales de tamaño de cicatriz (ha). 
+ 3) Definir paleta de colores para los rangos. 
+ 4) Visualizar la última banda y la clasificación por rangos. 
+ 5) Exportar la imagen clasificada a Assets. 
+ 6) Crear y añadir un panel de leyenda (UI) con etiquetas por clase. 
+
+ -------------------------------------------------------------
+ 🔧 ¿QUÉ DEBO MODIFICAR PARA USAR ESTE SCRIPT?
+ ✅ Verificar rutas de entrada/salida (asset de entrada y `assetId` de salida).
+ ✅ Ajustar `region` (geometría), `scale` y `maxPixels` según el país/área de estudio.
+ ✅ Actualizar `description` si se requiere una nomenclatura distinta.
+
+ 🗒️ Notas:
+ - Las clases de tamaño están definidas en hectáreas (ha).
+ - La visualización de “slice(-1)” muestra la última banda disponible.
+ - La leyenda UI refleja los rangos definidos (1 a 8).
+
+***************************************************************/
+
+// Encabezado 
+print('Burned Area Analysis by Size Range');
+
+var country = 'bolivia'; // 'bolivia','chile','colombia','ecuador','guyana','paraguay','peru','venezuela'
+var coll_n = '1';
+
+// 📥 asset de entrada
+var scar_size = ee.Image('projects/mapbiomas-' + country +'/assets/FIRE/COLLECTION' + coll_n +
+  '/FINAL_PRODUCTS/mapbiomas_' + country +'_fire_collection' + coll_n + '_annual_burned_area_ha_v1');
+
+// 📍 región
+var regions = ee.FeatureCollection('projects/mapbiomas-' + country +
+  '/assets/FIRE/AUXILIARY_DATA/regiones_fuego_' + country + '_v1');
+var geometry = regions.geometry().convexHull(1000);
+
+// 📤 salida
+var description = 'mapbiomas_' + country + '_fire_collection' + coll_n + '_annual_burned_scar_size_range_v1';
+var assetId = 'projects/mapbiomas-' + country +
+  '/assets/FIRE/COLLECTION' + coll_n + '/FINAL_PRODUCTS/' + description;
+
+//📊 PROCESAMIENTO (SIN CAMBIOS)
+
+// encabezado
+print('Burned Area Analysis by Size Range');
+
+// imprimir imagen
+print('Burned area size:', scar_size);
+
+// visualizar última banda
+Map.addLayer(scar_size.slice(-1), { min: 0, max: 1000 }, 'Burned Area Size (km²)', false);
+
+// clasificación
+var scar_size_ranges = scar_size
+  .multiply(0)
+  .where(scar_size.lt(10), 1)
+  .where(scar_size.gte(10), 2)
+  .where(scar_size.gte(250), 3)
+  .where(scar_size.gte(500), 4)
+  .where(scar_size.gte(5000), 5)
+  .where(scar_size.gte(10000), 6)
+  .where(scar_size.gte(50000), 7)
+  .where(scar_size.gte(100000), 8);
+
+// paleta
+var palette = ["#d0ae35", "#c68e2f", "#b96d2b", "#ac4b28", "#933328", "#72251d", "#4e180f", "#240d00"];
+
+// visualizar clasificación
+Map.addLayer(scar_size_ranges.slice(-1), { min: 1, max: 10, palette: palette }, 'Burned Area Size Ranges');
+
+// exportación
+Export.image.toAsset({
+  image: scar_size_ranges,
+  description: description,
+  assetId: assetId,
+  pyramidingPolicy: 'mode',
+  region: geometry,
+  scale: 30,
+  maxPixels: 1e13,
+  overwrite: true,
+});
+
+//🧾 LEYENDA (SIN CAMBIOS)
+
+var labels_ha = [
+  [1, '< 10 ha'],
+  [2, '10 - 250 ha'],
+  [3, '250 - 500 ha'],
+  [4, '500 - 5,000 ha'],
+  [5, '5,000 - 10,000 ha'],
+  [6, '10,000 - 50,000 ha'],
+  [7, '50,000 - 100,000 ha'],
+  [8, '>= 100,000 ha']
+];
+
+var legendPanel = labels_ha.map(function(list, i) {
+  return ui.Panel([
+    ui.Label('O', { backgroundColor: palette[i], margin: '1px' }),
+    ui.Label(list[0] + ': ' + list[1], { fontSize: 10, margin: '1px' })
+  ], ui.Panel.Layout.Flow('horizontal'), { margin: '1px' });
+});
+
+var subtitle = ui.Panel([
+  ui.Panel(legendPanel, ui.Panel.Layout.Flow('vertical'), { margin: '1px', stretch: 'both', border: '0.5px solid red' })
+    .insert(0, ui.Label('LEGEND')),
+], ui.Panel.Layout.Flow('vertical'), { margin: '1px', position: 'bottom-left' });
+
+Map.add(subtitle);
