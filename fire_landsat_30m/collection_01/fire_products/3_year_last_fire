@@ -1,0 +1,133 @@
+/***************************************************************
+ MAPBIOMAS FUEGO – SUBPRODUCTO: YEAR LAST FIRE (2013–2024)
+
+ 📅 FECHA: 20 de abril de 2026
+
+ EQUIPO:
+ Red de mapeo de cicatrices de fuego - MapBiomas Fuego
+ - Instituto de Pesquisa Ambiental da Amazônia (IPAM)
+ - Wallace Silva e Vera Arruda; wallace.silva@ipam.org.br, vera.arruda@ipam.org.br
+ -------------------------------------------------------------
+ 📌 ¿QUÉ HACE ESTE SCRIPT?
+ Calcula y exporta el subproducto:
+
+ 🔴 `year_last_fire`: para cada año Y   valor é o ano do último fogo ocorrido até Y (inclusive).
+
+ 🧠 Lógica (resumen):
+ O script usa um método iterativo e acumulativo. Para cada ano da
+ série, ele compara com a imagem do ano anterior. Se há fogo no ano
+ atual, o valor do pixel é atualizado para o ano corrente; caso contrário,
+ o valor do pixel se mantém como o do ano anterior. Isso garante que,
+ para cada ano, a imagem resultante contenha o ano do último incêndio
+ até aquele momento.
+
+ -------------------------------------------------------------
+ 🔧 ¿QUÉ DEBO MODIFICAR PARA USAR ESTE SCRIPT?
+ ✅ Verificar `assetInput` (coleção de cicatrices).
+ ✅ Verificar `assetOutput` y `outFileName`.
+
+ ***************************************************************/
+
+/* ===========================
+ 🔧 BLOQUE DE CONFIGURACIÓN
+ =========================== */
+
+var country = 'bolivia';// 'bolivia', 'chile', 'colombia', 'ecuador',  'guyana', 'paraguay', 'peru' , 'venezuela'
+var coll_n = '1';
+
+// 🔥 Colección de cicatrices 
+var assetInput  = 'projects/mapbiomas-'+country+'/assets/FIRE/COLLECTION'+coll_n+'/FINAL_PRODUCTS/mapbiomas_'+country+'_fire_collection'+coll_n+'_annual_burned_v1';
+
+// 📤 Carpeta de salida y nombre del asset resultante
+var assetOutput = 'projects/mapbiomas-' + country + '/assets/FIRE/COLLECTION1/FINAL_PRODUCTS/';
+var outFileName = 'mapbiomas_'+country+'_fire_collection'+coll_n+'_year_last_fire_v1';
+
+// ⚙️ Resolución espacial
+var scale = 30;
+
+/* ===========================================
+ 📥 CARGA Y PREPARACIÓN DE INSUMOS
+ =========================================== */
+
+// Carga a imagem multibanda com uma banda por ano
+// Nome das bandas: burned_area_YYYY
+var scars = ee.Image(assetInput);
+
+/* ===================================================
+ 🧠 CÁLCULO ACUMULATIVO DEL YEAR LAST FIRE (YLF)
+ ===================================================
+
+ Idea:
+ - Itera sobre os nomes de banda da imagem de cicatrizes.
+ - Usa uma imagem inicial "semente" para o primeiro passo.
+ - A cada iteração, compara a banda do ano atual com a última banda
+   da imagem acumulada. Se o pixel queimou, ele é atualizado com o
+   ano atual, senão, mantém o valor anterior.
+ */
+
+// Semente: banda "anterior" vazia (ano startYear-1) para facilitar a iteração
+// Iterador que aplica a lógica acumulativa
+function year_last_fire_iteration(current, previous) {
+  var bandName = ee.String(current);
+  var year_current = ee.Number.parse(bandName.slice(-4)).int();
+  var prevImg = ee.Image(previous);
+
+  // A banda a ser adicionada é a última do 'previous'
+  // substituindo os pixels queimados com o ano atual
+  var this_year = prevImg.slice(-1).where(scars.select(bandName), year_current)
+    .rename(ee.String('classification_').cat(year_current.add(1)));
+
+  // Retorna a imagem acumulada com a nova banda
+  return prevImg.addBands(this_year);
+}
+
+// Itera sobre todos os anos e remove a banda semente
+var year_last_fire_final = ee.Image(
+  scars.bandNames().iterate(year_last_fire_iteration, ee.Image(0))
+).slice(1).selfMask()
+.int16();
+
+print('🔴 year_last_fire (1995–2025)', year_last_fire_final);
+
+// Geometría de exportación
+var geometry = scars.geometry();
+
+/* ===========================
+ 📤 EXPORTACIÓN DE RESULTADOS
+ =========================== */
+
+Export.image.toAsset({
+  image: year_last_fire_final.uint16(),
+  description: outFileName,
+  assetId: assetOutput + outFileName,
+  pyramidingPolicy: { '.default': 'mode' },
+  region: geometry,
+  overwrite:true,
+  scale: scale,
+  maxPixels: 1e13
+});
+
+/* ===========================
+ 🧪 VISUALIZACIÓN (OPCIONAL)
+ =========================== */
+
+var palette = [
+    '#010b7b','#01177c','#00227e','#002d80','#004284','#004c86',
+    '#00608a','#026b8d','#008998','#26a09e','#5db9ad','#94d2bd',
+    '#9fbd98','#aaa772','#bf7c27','#c45905','#b93c0c','#b42e0f',
+    '#ae2012','#aa2016','#a6211a','#a3211e','#9b2226','#901417',
+    '#810000','#810000','#750000'
+];
+
+// Visualiza um ano específico do YLF (ex.: 2025)
+var year_vis = 2025;
+var visParams = {
+  bands: ['classification_' + year_vis],
+  min: 1995,
+  max: 2025,
+  palette: palette
+};
+
+Map.addLayer(year_last_fire_final, visParams, '🔴 Year Last Fire ' + year_vis);
+Map.addLayer(scars, {min:0, max:1, palette:['000000','FF0000'],bands:'burned_area_' + year_vis}, '🔥 Fuego ' + year_vis, false);
+Map.centerObject(ee.Geometry.Point([-75.281, -9.817]), 5);
