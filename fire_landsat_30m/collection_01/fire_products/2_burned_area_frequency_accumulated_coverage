@@ -1,0 +1,267 @@
+/***************************************************************
+ MAPBIOMAS FUEGO - FRECUENCIA Y ACUMULADO DE ÁREAS QUEMADAS
+
+ 📅 FECHA: 06 de mayo de 2025
+
+ EQUIPO:
+ Red de mapeo de cicatrices de fuego - MapBiomas Fuego
+ - Instituto de Pesquisa Ambiental da Amazônia (IPAM)
+ - Wallace Silva e Vera Arruda; wallace.silva@ipam.org.br, vera.arruda@ipam.org.br
+
+ -------------------------------------------------------------
+ 📌 ¿QUÉ HACE ESTE SCRIPT?
+ Genera y exporta dos productos acumulados de fuego:
+
+ 🔴 `fireFrequency`: frecuencia de quemas (0–N), sin LULC.
+ 🔵 `fireFrequencyCoverage`: frecuencia con codificación LULC.
+
+ También genera:
+ 🟡 `fireAccumulated`: binario 0/1 indicando quemas acumuladas.
+ 🟢 `fireAccumulatedCoverage`: clases LULC de las áreas quemadas acumuladas.
+
+ -------------------------------------------------------------
+ 🔧 ¿QUÉ DEBO MODIFICAR PARA USAR ESTE SCRIPT?
+ ✅ Cambiar la variable `country` si deseas otro país.
+ ✅ Verificar rutas y nombres de salida.
+
+***************************************************************/
+
+// 🌍 País en análisis
+var country = 'bolivia'; // 'bolivia', 'chile', 'colombia', 'paraguay', 'peru'
+var coll_n = '1';
+// 🧾 Nombres de archivos de salida
+var outFileNameFrequency = 'mapbiomas_'+ country +'_fire_collection' + coll_n + '_frequency_burned_v1'; 
+var outFileNameFrequencyCoverage = 'mapbiomas_'+ country +'_fire_collection' + coll_n + '_frequency_burned_coverage_v1'; 
+var outFileNameAccumulated = 'mapbiomas_'+ country +'_fire_collection' + coll_n + '_accumulated_burned_v1'; 
+var outFileNameAccumulatedCoverage = 'mapbiomas_'+ country +'_fire_collection' + coll_n + '_accumulated_burned_coverage_v1'; 
+
+var assetOutput = 'projects/mapbiomas-' + country + '/assets/FIRE/COLLECTION1/FINAL_PRODUCTS/';
+
+// 🗂️ Imagen anual de quemas
+var assetFire = assetOutput + 'mapbiomas_'+ country +'_fire_collection'+coll_n+'_annual_burned_v1';
+var annualBurned = ee.Image(assetFire);
+print("annualBurned",annualBurned)
+// 🌱 Colecciones de LULC por país
+var landcover = {
+  bolivia: ee.Image('projects/mapbiomas-public/assets/bolivia/lulc/collection3/mapbiomas_bolivia_collection3_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/bolivia/lulc/collection3/mapbiomas_bolivia_collection3_integration_v1').slice(-1).rename(['classification_2025'])),
+  chile: ee.Image('projects/mapbiomas-public/assets/chile/collection1/mapbiomas_chile_collection1_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/chile/collection1/mapbiomas_chile_collection1_integration_v1').slice(-1).rename(['classification_2023']))
+            .addBands(ee.Image('projects/mapbiomas-public/assets/chile/collection1/mapbiomas_chile_collection1_integration_v1').slice(-1).rename(['classification_2024'])),
+  colombia: ee.Image('projects/mapbiomas-public/assets/colombia/collection2/mapbiomas_colombia_collection2_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/colombia/collection2/mapbiomas_colombia_collection2_integration_v1').slice(-1).rename(['classification_2024'])),
+  paraguay: ee.Image('projects/mapbiomas-public/assets/paraguay/collection2/mapbiomas_paraguay_collection2_integration_v1')
+            .addBands(ee.Image('projects/mapbiomas-public/assets/paraguay/collection2/mapbiomas_paraguay_collection2_integration_v1').slice(-1).rename(['classification_2024'])),
+  peru: ee.Image('projects/mapbiomas-public/assets/peru/collection3/mapbiomas_peru_collection3_integration_v1')
+};
+
+var lulc = landcover[country];
+print('lulc',lulc);
+var geometry = lulc.geometry();
+
+// 🧮 Generación de productos acumulados 
+annualBurned.bandNames().evaluate(function (bandnames) {
+  
+  var year_initial_band = bandnames[0].slice(-4);
+  var year_final_band   = bandnames.slice(-1)[0].slice(-4);
+
+  // -------- FORWARD: desde year_initial_band → year_final_band --------
+  var hitFirst  = annualBurned.select('burned_area_' + year_initial_band).gt(0);
+  var countPrev = hitFirst.unmask(0); 
+  var freqPrev  = countPrev 
+    .rename('fire_frequency_' + year_initial_band + '_' + year_initial_band)
+    .selfMask();
+
+  var freqCovPrev = freqPrev.multiply(100)
+    .add(lulc.select('classification_' + year_initial_band))
+    .int16()
+    .rename('fire_frequency_' + year_initial_band + '_' + year_initial_band);
+
+  bandnames.slice(1).forEach(function (bandname) {
+    var year = bandname.slice(-4);
+    var hit  = annualBurned.select(bandname).gt(0);
+
+    countPrev = countPrev.add(hit.unmask(0));
+
+    var freq = countPrev 
+      .rename('fire_frequency_' + year_initial_band + '_' + year).selfMask();
+
+    var freqCoverage = freq.multiply(100)
+      .add(lulc.select('classification_' + year))
+      .int16();
+
+    freqPrev    = freqPrev.addBands(freq);
+    freqCovPrev = freqCovPrev.addBands(freqCoverage);
+  });
+
+  // -------- BACKWARD: desde year_final_band ← year_initial_band --------
+  var hitLast  = annualBurned.select('burned_area_' + year_final_band).gt(0);
+  var countPost = hitLast.unmask(0);
+  var freqPost  = countPost 
+    .rename('fire_frequency_' + year_final_band + '_' + year_final_band)
+    .selfMask();
+
+  var freqCovPost = freqPost.multiply(100)
+    .add(lulc.select('classification_' + year_final_band))
+    .int16()
+    .rename('fire_frequency_' + year_final_band + '_' + year_final_band);
+
+  bandnames.slice(0, -1).reverse().forEach(function (bandname) {
+    var year = bandname.slice(-4);
+    var hit  = annualBurned.select(bandname).gt(0);
+
+    countPost = countPost.add(hit.unmask(0));
+
+    var freq = countPost 
+      .rename('fire_frequency_' + year + '_' + year_final_band)
+      .selfMask();
+
+    var freqCoverage = freq.multiply(100)
+      .add(lulc.select('classification_' + year))
+      .int16();
+
+    freqPost    = freqPost.addBands(freq);
+    freqCovPost = freqCovPost.addBands(freqCoverage);
+  });
+
+  // 🔴 Frecuencia sin y con uso del suelo
+  var fireFrequency = freqPrev.addBands(freqPost.slice(0,-1)).select('fire_fre.*');
+  fireFrequency = fireFrequency.select(fireFrequency.bandNames().sort());
+
+  var fireFrequencyCoverage = freqCovPrev.addBands(freqCovPost.slice(0,-1)).select('fire_fre.*');
+  fireFrequencyCoverage = fireFrequencyCoverage.select(fireFrequencyCoverage.bandNames().sort());
+
+  // 🟡 Acumulado binario (0/1 indicando presencia de fuego)
+  var fireAccumulated = fireFrequency.gte(1).rename(
+    fireFrequency.bandNames().map(function (bn) {
+      return ee.String(bn).replace('fire_frequency_', 'fire_accumulated_');
+    })
+  );
+
+  // 🟢 Acumulado con uso del suelo
+  var fireAccumulatedCoverage = fireFrequencyCoverage
+    .mod(100)
+    .int()
+    .rename(fireAccumulated.bandNames());
+
+  // ✅ MÁSCARA FINAL: enmascara únicamente píxeles que nunca quemaron en todo el período
+  var everBurned = annualBurned.unmask(0).gt(0).reduce(ee.Reducer.sum()).gt(0);
+
+  fireFrequency           = fireFrequency.selfMask();
+  fireFrequencyCoverage   = fireFrequencyCoverage.selfMask();
+  fireAccumulated         = fireAccumulated.selfMask();
+  fireAccumulatedCoverage = fireAccumulatedCoverage.selfMask();
+
+  // 📤 Impresión de verificación
+  print('🔴 fireFrequency', fireFrequency);
+  print('🔵 fireFrequencyCoverage', fireFrequencyCoverage);
+  print('🟡 fireAccumulated', fireAccumulated);
+  print('🟢 fireAccumulatedCoverage', fireAccumulatedCoverage);
+  
+  // 📤 Exportación de resultados (mantidos)
+  Export.image.toAsset({
+    image: fireFrequency,
+    description: outFileNameFrequency,
+    assetId: assetOutput + outFileNameFrequency,
+    pyramidingPolicy: { '.default': 'mode' },
+    region: geometry,
+    scale: 30,
+    maxPixels: 1e13,
+    overwrite: true
+  });
+
+  Export.image.toAsset({
+    image: fireFrequencyCoverage,
+    description: outFileNameFrequencyCoverage,
+    assetId: assetOutput + outFileNameFrequencyCoverage,
+    pyramidingPolicy: { '.default': 'mode' },
+    region: geometry,
+    scale: 30,
+    maxPixels: 1e13,
+    overwrite: true
+  });
+
+  Export.image.toAsset({
+    image: fireAccumulated,
+    description: outFileNameAccumulated,
+    assetId: assetOutput + outFileNameAccumulated,
+    pyramidingPolicy: { '.default': 'mode' },
+    region: geometry,
+    scale: 30,
+    maxPixels: 1e13,
+    overwrite: true
+  });
+
+  Export.image.toAsset({
+    image: fireAccumulatedCoverage,
+    description: outFileNameAccumulatedCoverage,
+    assetId: assetOutput + outFileNameAccumulatedCoverage,
+    pyramidingPolicy: { '.default': 'mode' },
+    region: geometry,
+    scale: 30,
+    maxPixels: 1e13,
+    overwrite: true
+  });
+
+  // 🧪 Visualización (opcional) — pode manter como já estava
+  var year = 2024;
+  var fire_palettes = require('users/mapbiomasworkspace1/mapbiomas-fire:00_Tools/Palettes.js');
+  var lulc_palettes = require('users/mapbiomas/modules:Palettes.js');
+
+  Map.addLayer(
+    annualBurned,
+    {
+      bands: 'burned_area_' + year,
+      palette: ["800000"]
+    },
+    'Área quemada anual - ' + year
+  );
+
+  // 🔴 Frecuencia sin LULC
+  Map.addLayer(
+    fireFrequency,
+    {
+      bands: 'fire_frequency_' + year_initial_band + '_' + year,
+      min: 0,
+      max: 25,
+      palette: fire_palettes.get('frecuencia25')
+    },
+    '🔴 Frecuencia de fuego (sin LULC) - ' + year
+  );
+  
+  // 🔵 LULC extraído da frecuencia + LULC
+  Map.addLayer(
+    fireFrequencyCoverage.mod(100).byte(),
+    {
+      bands: 'fire_frequency_' + year_initial_band + '_' + year,
+      min: 0,
+      max: 69,
+      palette: lulc_palettes.get('classification9')
+    },
+    '🔵 Frecuencia de fuego - clase LULC ' + year
+  );
+  
+  // 🟢 Acumulado + LULC combinado
+  Map.addLayer(
+    fireAccumulatedCoverage,
+    {
+      bands: 'fire_accumulated_' + year_initial_band + '_' + year,
+      min: 0,
+      max: 69,
+      palette: lulc_palettes.get('classification9')
+    },
+    '🟢 Fuego acumulado + clase LULC - valor combinado ' + year
+  );
+  
+  // 🟡 Solo binário do acumulado (presença de fogo)
+  Map.addLayer(
+    fireAccumulated,
+    {
+      bands: 'fire_accumulated_' + year_initial_band + '_' + year,
+      palette: ['ffffff', 'ff0000']
+    },
+    '🟡 Fuego acumulado - presencia binaria ' + year
+  );
+
+  
+});
